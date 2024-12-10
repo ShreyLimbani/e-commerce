@@ -20,7 +20,7 @@ class Cart(models.Model):
     """
     user_id = models.CharField(max_length=50)
     item = models.ForeignKey(Item, on_delete=models.CASCADE)
-    quantity = models.IntegerField()
+    quantity = models.IntegerField(default=0)
     
     def __str__(self):
         return f"Cart - User: {self.user_id}, Item: {self.item.name}, Quantity: {self.quantity}"

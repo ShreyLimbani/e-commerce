@@ -1,9 +1,10 @@
-import uuid
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from django.db.models import Sum, Count
-from .models import Cart, DiscountCode, Item, Order
-import json
+from .models import Cart, DiscountCode, Item, Order, OrderItem
+from .serializers import ItemSerializer, CartSerializer, DiscountCodeSerializer
+import uuid
+from ecommerce.settings import DEFAULT_DISCOUNT_ORDER_COUNT
 
 @api_view(['POST'])
 def add_item(request):
@@ -30,12 +31,24 @@ def add_item(request):
         )
 
         if created:
-            return Response({"message": f"Item '{name}' added successfully.", "item": json.dumps(item)})
+            # Use ItemSerializer to return a response
+            serializer = ItemSerializer(item)
+            return Response({"message": f"Item '{name}' added successfully.", "item": serializer.data})
         else:
             return Response({"message": "Item with this ID already exists."}, status=400)
     except Exception as e:
         return Response({"message": f"Error: {str(e)}"}, status=500)
-    
+
+
+@api_view(['GET'])
+def list_items(request):
+    """
+    Lists all items in the catalog.
+    """
+    items = Item.objects.all()
+    serializer = ItemSerializer(items, many=True)
+    return Response(serializer.data, status=200)
+
 
 @api_view(['POST'])
 def add_to_cart(request):
@@ -56,9 +69,11 @@ def add_to_cart(request):
             cart_item.quantity += quantity
             cart_item.save()
 
+        cart_serializer = CartSerializer(cart_item)
+
         return Response({
             "message": f"Added {quantity} of '{item.name}' to the cart.",
-            "cart": json.dumps(cart_item)
+            "cart": cart_serializer.data
         })
     except Item.DoesNotExist:
         return Response({"message": "Item does not exist."}, status=404)
@@ -76,22 +91,13 @@ def view_cart(request, user_id):
     if not cart_items.exists():
         return Response({"message": "Your cart is empty.", "cart":[], "amount":0})
 
-    cart_data = [
-        {
-            "item_id": cart_item.item.item_id,
-            "name": cart_item.item.name,
-            "price": cart_item.item.price,
-            "quantity": cart_item.quantity,
-            "total_price": cart_item.quantity * cart_item.item.price,
-        }
-        for cart_item in cart_items
-    ]
-
-    total_amount = sum(item["total_price"] for item in cart_data)
+    cart_serializer = CartSerializer(cart_items, many=True)
+    
+    total_amount = sum(cart_item['quantity'] * cart_item['item']['price'] for cart_item in cart_serializer.data)
 
     return Response({
-        "message": f"Your cart has ${len(cart_items)} items.",
-        "cart": cart_data,
+        "message": f"Your cart has {len(cart_items)} items.",
+        "cart": cart_serializer.data,
         "total_amount": total_amount
     })
 
@@ -118,10 +124,10 @@ def checkout(request):
     if discount_code_input:
         try:
             discount_code = DiscountCode.objects.get(code=discount_code_input, is_valid=True)
-            discount_amount = total_amount * (discount_code.discount_percentage/100) 
+            discount_amount = total_amount * (discount_code.discount_percentage / 100)
             discount_code.is_valid = False  # Invalidate the code
             discount_code.save()
-        except DiscountCode.DoesNotExist:
+        except DiscountCode.DoesNotExist as e:
             return Response({"message": "Invalid or expired discount code."}, status=400)
 
     # Final total
@@ -147,9 +153,9 @@ def checkout(request):
     # Clear cart
     cart_items.delete()
 
-    # Generate a new discount code for every 5th order
+    # Generate a new discount code for every nth order
     new_discount_code = None
-    if Order.objects.count() % 5 == 0:
+    if Order.objects.count() % DEFAULT_DISCOUNT_ORDER_COUNT == 0:
         new_discount_code = str(uuid.uuid4())[:8].upper()
         DiscountCode.objects.create(code=new_discount_code)
 
@@ -160,17 +166,15 @@ def checkout(request):
         "new_discount_code": new_discount_code
     })
 
-
 @api_view(['POST'])
 def generate_discount_code(request):
     """
     Generates a new discount code.
     """
-    
     discount_percentage = request.data.get("discount_percentage")
 
     code = str(uuid.uuid4())[:8].upper()  # Generate an 8-character code
-    DiscountCode.objects.create(code=code, is_valid=True, discount_percentage = discount_percentage)
+    DiscountCode.objects.create(code=code, is_valid=True, discount_percentage=discount_percentage)
 
     return Response({"message": "Discount code generated.", "code": code})
 
@@ -183,17 +187,18 @@ def view_purchase_summary(request):
     """
     # Aggregate total_orders, total_revenue, and total_discount in a single query
     order_summary = Order.objects.aggregate(
-        total_orders= Count('id'),
-        total_revenue= Sum('total_amount'),
-        total_discount= Sum('discount_amount')
+        total_orders=Count('id'),
+        total_revenue=Sum('total_amount'),
+        total_discount=Sum('discount_amount')
     )
 
     # Fetch all discount codes in one query
-    discount_codes = DiscountCode.objects.all().values('code', 'is_valid')
+    discount_codes = DiscountCode.objects.all()
+    discount_code_serializer = DiscountCodeSerializer(discount_codes, many=True)
 
     return Response({
         "total_orders": order_summary.get("total_orders", 0),
         "total_revenue": order_summary.get("total_revenue", 0.0),
         "total_discount": order_summary.get("total_discount", 0.0),
-        "discount_codes": list(discount_codes)
+        "discount_codes": discount_code_serializer.data
     })
