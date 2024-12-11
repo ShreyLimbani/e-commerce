@@ -67,7 +67,9 @@ def add_to_cart(request):
         cart_item, created = Cart.objects.get_or_create(user_id=user_id, item=item)
         if not created:
             cart_item.quantity += quantity
-            cart_item.save()
+        else:
+            cart_item.quantity = quantity
+        cart_item.save()
 
         cart_serializer = CartSerializer(cart_item)
 
